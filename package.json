@@ -1,0 +1,29 @@
+{
+  "name": "judge-engine",
+  "version": "1.0.0",
+  "description": "Simplified code execution engine (Judge0-style) using Node.js, Redis, BullMQ, and Docker.",
+  "main": "worker.js",
+  "scripts": {
+    "worker": "node worker.js",
+    "producer": "node producer.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "bullmq": "^5.70.1",
+    "cookie-parser": "^1.4.7",
+    "dockerode": "^4.0.9",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "ioredis": "^5.9.3",
+    "tar-stream": "^3.1.6"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mpriyanshu22/Judge-Engine.git"
+  },
+  "author": "",
+  "bugs": {
+    "url": "https://github.com/mpriyanshu22/Judge-Engine/issues"
+  },
+  "homepage": "https://github.com/mpriyanshu22/Judge-Engine#readme"
+}
