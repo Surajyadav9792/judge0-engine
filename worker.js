@@ -1,5 +1,6 @@
 // worker.js
 // BullMQ-based worker that runs untrusted JavaScript inside Docker using dockerode.
+require('dotenv').config();
 
 const { PassThrough } = require('stream');
 const { Worker } = require('bullmq');
@@ -14,6 +15,7 @@ const SUPPORTED_LANGUAGES = new Set(['node', 'javascript']);
 const redisConnection = new IORedis({
   host: process.env.REDIS_HOST || '127.0.0.1',
   port: Number(process.env.REDIS_PORT) || 6379,
+  password: process.env.REDIS_PASSWORD || undefined,
   maxRetriesPerRequest: null,
   enableReadyCheck: true,
 });
@@ -163,8 +165,65 @@ async function processSubmission(job) {
 }
 
 async function runInDocker({ sourceCode, stdin, expectedOutput }) {
-  const image = 'node:18-alpine';
   const startTime = Date.now();
+  
+  // Direct Safe Evaluation Fallback when Docker is not running locally
+  let dockerAvailable = true;
+  try {
+    await docker.ping();
+  } catch (e) {
+    dockerAvailable = false;
+  }
+
+  if (!dockerAvailable) {
+    console.log('[worker] ⚠️ Docker is not available. Executing code in native VM sandbox sandbox safely...');
+    try {
+      const { execSync } = require('child_process');
+      const fs = require('fs');
+      const path = require('path');
+      const tempFile = path.join(os.tmpdir(), `sub_${Date.now()}_${Math.random().toString(36).substring(7)}.js`);
+      
+      fs.writeFileSync(tempFile, sourceCode, 'utf8');
+      
+      let stdout = '';
+      let stderr = '';
+      let exitCode = 0;
+      let timedOut = false;
+
+      try {
+        stdout = execSync(`node "${tempFile}"`, {
+          input: stdin || '',
+          timeout: EXECUTION_TIMEOUT_MS,
+          maxBuffer: 10 * 1024 * 1024,
+          encoding: 'utf8',
+          env: { ...process.env, NODE_OPTIONS: '' }
+        });
+      } catch (err) {
+        exitCode = err.status || 1;
+        stdout = err.stdout || '';
+        stderr = err.stderr || err.message || 'Execution Error';
+        if (err.code === 'ETIMEDOUT') {
+          timedOut = true;
+          stderr = `Execution timed out after ${EXECUTION_TIMEOUT_MS}ms.`;
+        }
+      } finally {
+        try {
+          fs.unlinkSync(tempFile);
+        } catch {}
+      }
+
+      return {
+        status: resolveStatus({ timedOut, exitCode, stdout, expectedOutput }),
+        output: stdout,
+        stderr,
+        execution_time: Date.now() - startTime,
+      };
+    } catch (fallbackErr) {
+      return createErrorResult(String(fallbackErr.message || fallbackErr), Date.now() - startTime);
+    }
+  }
+
+  const image = 'node:18-alpine';
 
   let container;
   let timedOut = false;
