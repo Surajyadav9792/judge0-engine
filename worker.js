@@ -380,3 +380,12 @@ console.log('-----------------------------------------');
 console.log('🚀 Judge Engine Worker started successfully!');
 console.log(`📡 Listening on Queue: "${QUEUE_NAME}"`);
 console.log('-----------------------------------------');
+
+// Add a tiny Express server to satisfy Render's web service health checks (for free tier deployment)
+const express = require('express');
+const app = express();
+app.get('/', (req, res) => res.status(200).send('OK'));
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+  console.log(`Express health-check listening on port: ${port}`);
+});
