@@ -13,9 +13,9 @@ const EXECUTION_TIMEOUT_MS = Number(process.env.EXECUTION_TIMEOUT_MS) || 5000;
 const SUPPORTED_LANGUAGES = new Set(['node', 'javascript', 'c++', 'cpp', 'java', '54', '62', '63']);
 
 const redisConnection = new IORedis({
-  host: process.env.REDIS_HOST || '127.0.0.1',
-  port: Number(process.env.REDIS_PORT) || 6379,
-  password: process.env.REDIS_PASSWORD || undefined,
+  host: process.env.REDIS_HOST || 'redis-12921.c89.us-east-1-3.ec2.cloud.redislabs.com',
+  port: Number(process.env.REDIS_PORT) || 12921,
+  password: process.env.REDIS_PASSWORD || '07N4pKz2f2zRjzHzYrirZ6ywVQWrwBAS',
   maxRetriesPerRequest: null,
   enableReadyCheck: true,
 });
