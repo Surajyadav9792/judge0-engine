@@ -10,7 +10,7 @@ const os = require('os');
 
 const QUEUE_NAME = process.env.QUEUE_NAME || 'submissions';
 const EXECUTION_TIMEOUT_MS = Number(process.env.EXECUTION_TIMEOUT_MS) || 5000;
-const SUPPORTED_LANGUAGES = new Set(['node', 'javascript']);
+const SUPPORTED_LANGUAGES = new Set(['node', 'javascript', 'c++', 'cpp', 'java', '54', '62', '63']);
 
 const redisConnection = new IORedis({
   host: process.env.REDIS_HOST || '127.0.0.1',
@@ -65,12 +65,12 @@ function validateJobData(job) {
     return { error: createErrorResult('sourceCode is required') };
   }
 
-  const langKey = language.toLowerCase();
+  const langKey = String(language).toLowerCase();
   if (!SUPPORTED_LANGUAGES.has(langKey)) {
     return { error: createErrorResult(`Unsupported language: ${language}`) };
   }
 
-  return { input: { sourceCode, stdin, expectedOutput } };
+  return { input: { sourceCode, stdin, expectedOutput, language: langKey } };
 }
 
 function withTimeout(runPromise, timeoutMs, onTimeout) {
@@ -164,8 +164,9 @@ async function processSubmission(job) {
   return result;
 }
 
-async function runInDocker({ sourceCode, stdin, expectedOutput }) {
+async function runInDocker({ sourceCode, stdin, expectedOutput, language }) {
   const startTime = Date.now();
+  const langKey = String(language || 'node').toLowerCase();
   
   // Direct Safe Evaluation Fallback when Docker is not running locally
   let dockerAvailable = true;
@@ -176,28 +177,62 @@ async function runInDocker({ sourceCode, stdin, expectedOutput }) {
   }
 
   if (!dockerAvailable) {
-    console.log('[worker] ⚠️ Docker is not available. Executing code in native VM sandbox sandbox safely...');
+    console.log(`[worker] ⚠️ Docker is not available. Executing ${langKey} code in native VM sandbox safely...`);
     try {
       const { execSync } = require('child_process');
       const fs = require('fs');
       const path = require('path');
-      const tempFile = path.join(os.tmpdir(), `sub_${Date.now()}_${Math.random().toString(36).substring(7)}.js`);
-      
-      fs.writeFileSync(tempFile, sourceCode, 'utf8');
       
       let stdout = '';
       let stderr = '';
       let exitCode = 0;
       let timedOut = false;
+      let tempFile = '';
 
       try {
-        stdout = execSync(`node "${tempFile}"`, {
-          input: stdin || '',
-          timeout: EXECUTION_TIMEOUT_MS,
-          maxBuffer: 10 * 1024 * 1024,
-          encoding: 'utf8',
-          env: { ...process.env, NODE_OPTIONS: '' }
-        });
+        if (langKey === 'c++' || langKey === 'cpp' || langKey === '54') {
+          tempFile = path.join(os.tmpdir(), `sub_${Date.now()}_${Math.random().toString(36).substring(7)}.cpp`);
+          const outBin = path.join(os.tmpdir(), `out_${Date.now()}_${Math.random().toString(36).substring(7)}.exe`);
+          fs.writeFileSync(tempFile, sourceCode, 'utf8');
+          try {
+            execSync(`g++ -O2 "${tempFile}" -o "${outBin}"`, { encoding: 'utf8', stdio: 'pipe' });
+          } catch (compileErr) {
+            return {
+              status: 'Compilation Error',
+              output: '',
+              stderr: compileErr.stderr || compileErr.message,
+              execution_time: Date.now() - startTime,
+            };
+          }
+          stdout = execSync(`"${outBin}"`, { input: stdin || '', timeout: EXECUTION_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' });
+          try { fs.unlinkSync(outBin); } catch {}
+        } else if (langKey === 'java' || langKey === '62') {
+          const randDir = path.join(os.tmpdir(), `java_${Date.now()}_${Math.random().toString(36).substring(7)}`);
+          fs.mkdirSync(randDir);
+          tempFile = path.join(randDir, 'Solution.java');
+          fs.writeFileSync(tempFile, sourceCode, 'utf8');
+          try {
+            execSync(`javac "${tempFile}"`, { encoding: 'utf8', stdio: 'pipe' });
+          } catch (compileErr) {
+            return {
+              status: 'Compilation Error',
+              output: '',
+              stderr: compileErr.stderr || compileErr.message,
+              execution_time: Date.now() - startTime,
+            };
+          }
+          stdout = execSync(`java -cp "${randDir}" Solution`, { input: stdin || '', timeout: EXECUTION_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' });
+        } else {
+          tempFile = path.join(os.tmpdir(), `sub_${Date.now()}_${Math.random().toString(36).substring(7)}.js`);
+          fs.writeFileSync(tempFile, sourceCode, 'utf8');
+          stdout = execSync(`node "${tempFile}"`, {
+            input: stdin || '',
+            timeout: EXECUTION_TIMEOUT_MS,
+            maxBuffer: 10 * 1024 * 1024,
+            encoding: 'utf8',
+            env: { ...process.env, NODE_OPTIONS: '' }
+          });
+        }
       } catch (err) {
         exitCode = err.status || 1;
         stdout = err.stdout || '';
@@ -207,9 +242,7 @@ async function runInDocker({ sourceCode, stdin, expectedOutput }) {
           stderr = `Execution timed out after ${EXECUTION_TIMEOUT_MS}ms.`;
         }
       } finally {
-        try {
-          fs.unlinkSync(tempFile);
-        } catch {}
+        try { if (tempFile) fs.unlinkSync(tempFile); } catch {}
       }
 
       return {
@@ -223,7 +256,23 @@ async function runInDocker({ sourceCode, stdin, expectedOutput }) {
     }
   }
 
-  const image = 'node:18-alpine';
+  let image, ext, writeCmd, runCmd;
+  if (langKey === 'c++' || langKey === 'cpp' || langKey === '54') {
+    image = 'gcc:12';
+    ext = 'cpp';
+    writeCmd = ['sh', '-c', 'echo "$USER_CODE" | base64 -d > /tmp/solution.cpp && g++ -O2 /tmp/solution.cpp -o /tmp/solution'];
+    runCmd = ['sh', '-c', 'echo "$STDIN_B64" | base64 -d | /tmp/solution'];
+  } else if (langKey === 'java' || langKey === '62') {
+    image = 'openjdk:17-alpine';
+    ext = 'java';
+    writeCmd = ['sh', '-c', 'echo "$USER_CODE" | base64 -d > /tmp/Solution.java && javac /tmp/Solution.java'];
+    runCmd = ['sh', '-c', 'echo "$STDIN_B64" | base64 -d | java -cp /tmp Solution'];
+  } else {
+    image = 'node:18-alpine';
+    ext = 'js';
+    writeCmd = ['sh', '-c', 'echo "$USER_CODE" | base64 -d > /tmp/solution.js'];
+    runCmd = ['sh', '-c', 'echo "$STDIN_B64" | base64 -d | node /tmp/solution.js'];
+  }
 
   let container;
   let timedOut = false;
@@ -249,7 +298,7 @@ async function runInDocker({ sourceCode, stdin, expectedOutput }) {
     await container.start();
 
     const writeExec = await container.exec({
-      Cmd: ['sh', '-c', 'echo "$USER_CODE" | base64 -d > /tmp/solution.js'],
+      Cmd: writeCmd,
       Env: [`USER_CODE=${sourceCodeBase64}`],
       AttachStdout: true,
       AttachStderr: true,
@@ -257,13 +306,18 @@ async function runInDocker({ sourceCode, stdin, expectedOutput }) {
 
     const writeResult = await executeAndCapture(writeExec);
     if (writeResult.exitCode !== 0) {
-      throw new Error(writeResult.stderr || 'Failed to write source into container.');
+      return {
+        status: 'Compilation Error',
+        output: '',
+        stderr: writeResult.stderr || 'Compilation failed.',
+        execution_time: Date.now() - startTime,
+      };
     }
 
     const stdinBase64 = Buffer.from(String(stdin || ''), 'utf8').toString('base64');
 
     const runExec = await container.exec({
-      Cmd: ['sh', '-c', 'echo "$STDIN_B64" | base64 -d | node /tmp/solution.js'],
+      Cmd: runCmd,
       Env: [`STDIN_B64=${stdinBase64}`],
       AttachStdout: true,
       AttachStderr: true,
